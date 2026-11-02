@@ -62,6 +62,22 @@ const RADII  = [0, 16, 30, 50];   // por tamaño 1, 2, 3
 const SPEEDS = [0, 85, 55, 32];   // velocidad base por tamaño
 const POINTS = [0, 100, 50, 20];  // puntos por tamaño
 
+// ── Power-ups ─────────────────────────────────────────────────────────────────
+// Para agregar un poder nuevo: sumar una entrada acá y consultar
+// isPowerUpActive('<id>') donde corresponda aplicar su efecto.
+const POWERUP_CHANCE = 0.35;  // probabilidad de soltar un poder por asteroide destruido
+const SPREAD         = 0.22;  // rad entre balas del disparo triple (~12°)
+
+const POWERUPS = {
+  triple: {
+    label:    'TRIPLE',            // texto del HUD
+    message:  '¡DISPARO TRIPLE!',  // aviso al activarse
+    rgb:      '0,255,255',         // color (r,g,b)
+    duration: 10,                  // segundos
+    once:     true,                // solo una vez por nivel
+  },
+};
+
 class Asteroid {
   constructor(x, y, size = 3) {
     this.x    = x;
@@ -165,6 +181,9 @@ class Ship {
     const NOSE = 21;
     const ox = this.x + Math.cos(this.angle) * NOSE;
     const oy = this.y + Math.sin(this.angle) * NOSE;
+    if (isPowerUpActive('triple')) {
+      return [-SPREAD, 0, SPREAD].map(d => new Bullet(ox, oy, this.angle + d));
+    }
     return [new Bullet(ox, oy, this.angle)];
   }
 
@@ -240,6 +259,56 @@ let ship, bullets, asteroids, particles;
 let score, lives, level;
 let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
+let activePowerUps;   // { id: segundos restantes }
+let usedPowerUps;     // Set de ids ya aparecidos en el nivel actual
+let powerUpMsg;       // { text, rgb, timer } | null
+let levelKills;       // asteroides destruidos en el nivel
+let levelTotalKills;  // asteroides totales a destruir en el nivel
+
+// Cada asteroide grande genera 7 destrucciones: 1 grande + 2 medianos + 4 chicos
+const KILLS_PER_LARGE = 7;
+
+const isPowerUpActive = id => (activePowerUps[id] || 0) > 0;
+
+function activatePowerUp(id) {
+  const p = POWERUPS[id];
+  activePowerUps[id] = p.duration;
+  usedPowerUps.add(id);
+  powerUpMsg = { text: p.message, rgb: p.rgb, timer: 1.5 };
+}
+
+// Reinicia el control de poderes al empezar un nivel
+function startLevelPowerUps(largeCount) {
+  usedPowerUps    = new Set();
+  levelKills      = 0;
+  levelTotalKills = largeCount * KILLS_PER_LARGE;
+}
+
+// Al destruir un asteroide: chance de activar un poder disponible al azar.
+// Garantía: si a mitad del nivel no salió ninguno, se fuerza uno.
+function tryDropPowerUp(x, y) {
+  levelKills++;
+  const forced = usedPowerUps.size === 0 && levelKills >= levelTotalKills / 2;
+  if (!forced && Math.random() >= POWERUP_CHANCE) return;
+
+  const notUsed = Object.keys(POWERUPS)
+    .filter(id => !(POWERUPS[id].once && usedPowerUps.has(id)));
+  let available = notUsed.filter(id => !isPowerUpActive(id));
+  // Forzado y todos activos (p. ej. arrastrado del nivel anterior): se renueva
+  if (forced && available.length === 0) available = notUsed;
+  if (available.length === 0) return;
+
+  activatePowerUp(available[randInt(0, available.length - 1)]);
+  explode(x, y, 12);
+}
+
+function updatePowerUps(dt) {
+  for (const id in activePowerUps) {
+    activePowerUps[id] -= dt;
+    if (activePowerUps[id] <= 0) delete activePowerUps[id];
+  }
+  if (powerUpMsg && (powerUpMsg.timer -= dt) <= 0) powerUpMsg = null;
+}
 
 function spawnAsteroids(count) {
   const SAFE_DIST = 130;
@@ -262,6 +331,9 @@ function initGame() {
   lives  = 3;
   level  = 1;
   state  = 'playing';
+  activePowerUps = {};
+  powerUpMsg     = null;
+  startLevelPowerUps(4);
   spawnAsteroids(4);
 }
 
@@ -270,6 +342,7 @@ function nextLevel() {
   bullets   = [];
   particles = [];
   ship.reset();
+  startLevelPowerUps(3 + level);
   spawnAsteroids(3 + level);
 }
 
@@ -280,6 +353,7 @@ function explode(x, y, count = 8) {
 function killShip() {
   explode(ship.x, ship.y, 14);
   ship.dead = true;
+  activePowerUps = {};  // se pierden los poderes al morir
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -312,6 +386,8 @@ function update(dt) {
     bullets.push(...ship.tryShoot());
   }
 
+  updatePowerUps(dt);
+
   ship.update(dt);
   bullets.forEach(b => b.update(dt));
   asteroids.forEach(a => a.update(dt));
@@ -330,6 +406,7 @@ function update(dt) {
         score += POINTS[a.size];
         explode(a.x, a.y, a.size * 5);
         newAsteroids.push(...a.split());
+        tryDropPowerUp(a.x, a.y);
       }
     }
   }
@@ -381,6 +458,13 @@ function drawHUD() {
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
 
+  // Poderes activos, uno por línea bajo el score
+  ctx.textAlign = 'left';
+  Object.keys(activePowerUps).forEach((id, i) => {
+    const p = POWERUPS[id];
+    ctx.fillStyle = `rgb(${p.rgb})`;
+    ctx.fillText(`${p.label} ${activePowerUps[id].toFixed(1)}s`, 14, 46 + i * 20);
+  });
 }
 
 function drawOverlay(title, sub) {
@@ -403,6 +487,13 @@ function draw() {
   ship.draw();
 
   drawHUD();
+
+  if (powerUpMsg) {
+    ctx.textAlign = 'center';
+    ctx.font      = 'bold 28px monospace';
+    ctx.fillStyle = `rgba(${powerUpMsg.rgb},${Math.min(1, powerUpMsg.timer).toFixed(2)})`;
+    ctx.fillText(powerUpMsg.text, W / 2, H / 2 - 80);
+  }
 
   if (state === 'gameover')
     drawOverlay('GAME OVER', `PUNTAJE: ${score}   —   ESPACIO PARA REINICIAR`);
