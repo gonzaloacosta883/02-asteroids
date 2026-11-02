@@ -75,8 +75,24 @@ const POWERUPS = {
     rgb:      '0,255,255',         // color (r,g,b)
     duration: 10,                  // segundos
     once:     true,                // solo una vez por nivel
+    pickup:   true,                // aparece como ítem que hay que agarrar
+    icon:     'T',                 // letra dibujada en el ítem
+  },
+  shield: {
+    label:    'ESCUDO',
+    message:  '¡ESCUDO DE ENERGÍA!',
+    rgb:      '80,160,255',
+    duration: 5,                   // o hasta absorber un impacto
+    once:     true,
+    pickup:   true,                // aparece como ítem que hay que agarrar
+    icon:     'S',                 // letra dibujada en el ítem
   },
 };
+const ITEM_RADIUS = 11;   // radio del ítem recogible
+const ITEM_TTL    = 8;    // segundos antes de desaparecer
+const ITEM_SPEED  = 30;   // deriva lenta (px/s)
+const SHIELD_RADIUS     = 24;   // radio del círculo de energía
+const SHIELD_GRACE_TIME = 1;    // invencibilidad tras absorber un golpe (s)
 
 class Asteroid {
   constructor(x, y, size = 3) {
@@ -189,6 +205,7 @@ class Ship {
 
   draw() {
     if (this.dead) return;
+    if (isPowerUpActive('shield')) this.drawShield();
     // Parpadeo durante invencibilidad de reaparición
     if (this.invincible > 0 && Math.floor(this.invincible * 8) % 2 === 0) return;
 
@@ -218,6 +235,25 @@ class Ship {
       ctx.stroke();
     }
 
+    ctx.restore();
+  }
+
+  drawShield() {
+    const left = activePowerUps.shield;
+    // Parpadea el último segundo y medio para avisar que se acaba
+    if (left < 1.5 && Math.floor(left * 10) % 2 === 0) return;
+    const pulse = 0.55 + 0.3 * Math.sin(performance.now() / 120);
+    const rgb = POWERUPS.shield.rgb;
+    ctx.save();
+    ctx.lineWidth   = 2;
+    ctx.strokeStyle = `rgba(${rgb},${pulse.toFixed(2)})`;
+    ctx.fillStyle   = `rgba(${rgb},0.08)`;
+    ctx.shadowColor = `rgb(${rgb})`;
+    ctx.shadowBlur  = 12;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, SHIELD_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
     ctx.restore();
   }
 }
@@ -254,8 +290,54 @@ class Particle {
   }
 }
 
+// ── Ítem de poder (recogible) ─────────────────────────────────────────────────
+class PowerUpItem {
+  constructor(x, y, id) {
+    this.x  = x;
+    this.y  = y;
+    this.id = id;
+    const angle = rand(0, Math.PI * 2);
+    this.vx = Math.cos(angle) * ITEM_SPEED;
+    this.vy = Math.sin(angle) * ITEM_SPEED;
+    this.radius = ITEM_RADIUS;
+    this.ttl  = ITEM_TTL;
+    this.dead = false;
+  }
+
+  update(dt) {
+    this.x = wrap(this.x + this.vx * dt, W);
+    this.y = wrap(this.y + this.vy * dt, H);
+    this.ttl -= dt;
+    if (this.ttl <= 0) this.dead = true;
+  }
+
+  draw() {
+    // Parpadea los últimos 2 segundos
+    if (this.ttl < 2 && Math.floor(this.ttl * 8) % 2 === 0) return;
+    const p = POWERUPS[this.id];
+    const pulse = 1 + 0.12 * Math.sin(performance.now() / 150);
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.strokeStyle = `rgb(${p.rgb})`;
+    ctx.fillStyle   = `rgba(${p.rgb},0.15)`;
+    ctx.shadowColor = `rgb(${p.rgb})`;
+    ctx.shadowBlur  = 10;
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, this.radius * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle    = `rgb(${p.rgb})`;
+    ctx.font         = 'bold 13px monospace';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(p.icon, 0, 1);
+    ctx.restore();
+  }
+}
+
 // ── Estado del juego ──────────────────────────────────────────────────────────
-let ship, bullets, asteroids, particles;
+let ship, bullets, asteroids, particles, items;
 let score, lives, level;
 let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
@@ -293,13 +375,21 @@ function tryDropPowerUp(x, y) {
 
   const notUsed = Object.keys(POWERUPS)
     .filter(id => !(POWERUPS[id].once && usedPowerUps.has(id)));
-  let available = notUsed.filter(id => !isPowerUpActive(id));
+  const onScreen = id => items.some(it => it.id === id);
+  let available = notUsed.filter(id => !isPowerUpActive(id) && !onScreen(id));
   // Forzado y todos activos (p. ej. arrastrado del nivel anterior): se renueva
-  if (forced && available.length === 0) available = notUsed;
+  if (forced && available.length === 0) available = notUsed.filter(id => !onScreen(id));
   if (available.length === 0) return;
 
-  activatePowerUp(available[randInt(0, available.length - 1)]);
-  explode(x, y, 12);
+  const id = available[randInt(0, available.length - 1)];
+  if (POWERUPS[id].pickup) {
+    // Se suelta un ítem; cuenta como "aparecido" aunque no se agarre
+    items.push(new PowerUpItem(x, y, id));
+    usedPowerUps.add(id);
+  } else {
+    activatePowerUp(id);
+    explode(x, y, 12);
+  }
 }
 
 function updatePowerUps(dt) {
@@ -327,6 +417,7 @@ function initGame() {
   bullets   = [];
   asteroids = [];
   particles = [];
+  items     = [];
   score  = 0;
   lives  = 3;
   level  = 1;
@@ -341,6 +432,7 @@ function nextLevel() {
   level++;
   bullets   = [];
   particles = [];
+  items     = [];
   ship.reset();
   startLevelPowerUps(3 + level);
   spawnAsteroids(3 + level);
@@ -363,6 +455,19 @@ function killShip() {
   }
 }
 
+// El escudo absorbe el impacto: se rompe, destruye el asteroide
+// y deja una breve invencibilidad para no morir con los fragmentos.
+function absorbHit(a) {
+  delete activePowerUps.shield;
+  ship.invincible = SHIELD_GRACE_TIME;
+  a.dead = true;
+  score += POINTS[a.size];
+  explode(a.x, a.y, a.size * 5);
+  explode(ship.x, ship.y, 10);
+  asteroids = asteroids.filter(x => !x.dead).concat(a.split());
+  tryDropPowerUp(a.x, a.y);
+}
+
 // ── Update ────────────────────────────────────────────────────────────────────
 function update(dt) {
   if (state === 'gameover') {
@@ -377,6 +482,8 @@ function update(dt) {
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
     asteroids.forEach(a => a.update(dt));
+    items.forEach(it => it.update(dt));
+    items = items.filter(it => !it.dead);
     if (deadTimer <= 0) { state = 'playing'; ship.reset(); }
     return;
   }
@@ -392,9 +499,20 @@ function update(dt) {
   bullets.forEach(b => b.update(dt));
   asteroids.forEach(a => a.update(dt));
   particles.forEach(p => p.update(dt));
+  items.forEach(it => it.update(dt));
 
   bullets   = bullets.filter(b => !b.dead);
   particles = particles.filter(p => !p.dead);
+
+  // Nave vs ítem de poder
+  for (const it of items) {
+    if (!it.dead && dist(ship, it) < ship.radius + it.radius) {
+      it.dead = true;
+      activatePowerUp(it.id);
+      explode(it.x, it.y, 12);
+    }
+  }
+  items = items.filter(it => !it.dead);
 
   // Bala vs asteroide
   const newAsteroids = [];
@@ -415,9 +533,12 @@ function update(dt) {
 
   // Nave vs asteroide
   if (ship.invincible <= 0) {
+    const shielded = isPowerUpActive('shield');
+    const hitR     = shielded ? SHIELD_RADIUS : ship.radius;
     for (const a of asteroids) {
-      if (dist(ship, a) < ship.radius + a.radius * 0.82) {
-        killShip();
+      if (dist(ship, a) < hitR + a.radius * 0.82) {
+        if (shielded) absorbHit(a);
+        else          killShip();
         break;
       }
     }
@@ -483,6 +604,7 @@ function draw() {
 
   particles.forEach(p => p.draw());
   asteroids.forEach(a => a.draw());
+  items.forEach(it => it.draw());
   bullets.forEach(b => b.draw());
   ship.draw();
 
