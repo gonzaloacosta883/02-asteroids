@@ -101,7 +101,22 @@ const POWERUPS = {
     instant:  true,                // efecto único al agarrarlo, sin duración
     onActivate: () => nukeAsteroids(),
   },
+  turbo: {
+    label:    'TURBO',
+    message:  '¡TURBO!',
+    rgb:      '255,220,0',
+    duration: 8,
+    once:     true,
+    pickup:   true,
+    icon:     'V',
+    weight:   1.5,                 // más frecuente que los demás
+    levelChance: 0.85,             // alta prob. de estar habilitada en un nivel
+  },
 };
+// Turbo: multiplicadores sobre la física normal de la nave
+const TURBO_THRUST_MULT = 2.8;   // aceleración
+const TURBO_ROT_MULT    = 1.5;   // giro, para maniobrar con precisión
+const TURBO_MAX_SPEED   = 620;   // px/s (con turbo)
 const ITEM_RADIUS = 11;   // radio del ítem recogible
 const ITEM_TTL    = 8;    // segundos antes de desaparecer
 const ITEM_SPEED  = 30;   // deriva lenta (px/s)
@@ -186,8 +201,9 @@ class Ship {
     if (this.invincible    > 0) this.invincible    -= dt;
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
 
-    const ROT   = 3.5;   // rad/s
-    const THRUST = 260;  // px/s²
+    const turbo  = isPowerUpActive('turbo');
+    const ROT    = 3.5 * (turbo ? TURBO_ROT_MULT : 1);     // rad/s
+    const THRUST = 260 * (turbo ? TURBO_THRUST_MULT : 1);  // px/s²
     const DRAG   = 0.987;
 
     if (keys['ArrowLeft'])  this.angle -= ROT * dt;
@@ -201,6 +217,14 @@ class Ship {
 
     this.vx *= DRAG;
     this.vy *= DRAG;
+
+    // Tope de velocidad con turbo (sin turbo el drag ya limita a ~330 px/s;
+    // al terminar el turbo, el drag frena de a poco)
+    const speed = Math.hypot(this.vx, this.vy);
+    if (turbo && speed > TURBO_MAX_SPEED) {
+      this.vx *= TURBO_MAX_SPEED / speed;
+      this.vy *= TURBO_MAX_SPEED / speed;
+    }
     this.x = wrap(this.x + this.vx * dt, W);
     this.y = wrap(this.y + this.vy * dt, H);
   }
@@ -240,12 +264,14 @@ class Ship {
     ctx.stroke();
 
     // Llama del propulsor
-    if (this.thrusting && Math.random() > 0.35) {
+    // Con turbo: llama más larga, del color del poder y siempre visible
+    const turbo = isPowerUpActive('turbo');
+    if (this.thrusting && (turbo || Math.random() > 0.35)) {
       ctx.beginPath();
       ctx.moveTo(-8, -4);
-      ctx.lineTo(-8 - rand(6, 14), 0);
+      ctx.lineTo(-8 - (turbo ? rand(14, 26) : rand(6, 14)), 0);
       ctx.lineTo(-8,  4);
-      ctx.strokeStyle = 'rgba(255, 130, 0, 0.85)';
+      ctx.strokeStyle = turbo ? `rgba(${POWERUPS.turbo.rgb},0.95)` : 'rgba(255, 130, 0, 0.85)';
       ctx.stroke();
     }
 
