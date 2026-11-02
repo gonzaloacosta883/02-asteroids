@@ -76,6 +76,7 @@ const POWERUPS = {
     duration: 10,                  // segundos
     once:     true,                // solo una vez por nivel
     pickup:   true,                // aparece como ítem que hay que agarrar
+    levelChance: 0.3,              // prob. de estar habilitada en un nivel
     icon:     'T',                 // letra dibujada en el ítem
   },
   shield: {
@@ -85,7 +86,20 @@ const POWERUPS = {
     duration: 5,                   // o hasta absorber un impacto
     once:     true,
     pickup:   true,                // aparece como ítem que hay que agarrar
+    levelChance: 0.5,              // prob. de estar habilitada en un nivel
     icon:     'S',                 // letra dibujada en el ítem
+  },
+  bomb: {
+    label:    'BOMBA',
+    message:  '¡BOMBA!',
+    rgb:      '255,90,40',
+    once:     true,
+    pickup:   true,
+    icon:     'B',
+    weight:   0.2,                 // ítem escaso (los demás pesan 1)
+    levelChance: 0.3,              // prob. de estar habilitada en un nivel
+    instant:  true,                // efecto único al agarrarlo, sin duración
+    onActivate: () => nukeAsteroids(),
   },
 };
 const ITEM_RADIUS = 11;   // radio del ítem recogible
@@ -343,7 +357,9 @@ let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
 let activePowerUps;   // { id: segundos restantes }
 let usedPowerUps;     // Set de ids ya aparecidos en el nivel actual
+let levelPowerUps;    // ids habilitados en el nivel actual
 let powerUpMsg;       // { text, rgb, timer } | null
+let flashTimer = 0;   // destello de pantalla de la bomba (s)
 let levelKills;       // asteroides destruidos en el nivel
 let levelTotalKills;  // asteroides totales a destruir en el nivel
 
@@ -354,7 +370,8 @@ const isPowerUpActive = id => (activePowerUps[id] || 0) > 0;
 
 function activatePowerUp(id) {
   const p = POWERUPS[id];
-  activePowerUps[id] = p.duration;
+  if (p.instant) p.onActivate();
+  else           activePowerUps[id] = p.duration;
   usedPowerUps.add(id);
   powerUpMsg = { text: p.message, rgb: p.rgb, timer: 1.5 };
 }
@@ -362,6 +379,9 @@ function activatePowerUp(id) {
 // Reinicia el control de poderes al empezar un nivel
 function startLevelPowerUps(largeCount) {
   usedPowerUps    = new Set();
+  // Poderes con `levelChance` solo se habilitan en algunos niveles al azar
+  levelPowerUps   = Object.keys(POWERUPS)
+    .filter(id => Math.random() < (POWERUPS[id].levelChance ?? 1));
   levelKills      = 0;
   levelTotalKills = largeCount * KILLS_PER_LARGE;
 }
@@ -373,7 +393,7 @@ function tryDropPowerUp(x, y) {
   const forced = usedPowerUps.size === 0 && levelKills >= levelTotalKills / 2;
   if (!forced && Math.random() >= POWERUP_CHANCE) return;
 
-  const notUsed = Object.keys(POWERUPS)
+  const notUsed = levelPowerUps
     .filter(id => !(POWERUPS[id].once && usedPowerUps.has(id)));
   const onScreen = id => items.some(it => it.id === id);
   let available = notUsed.filter(id => !isPowerUpActive(id) && !onScreen(id));
@@ -381,7 +401,7 @@ function tryDropPowerUp(x, y) {
   if (forced && available.length === 0) available = notUsed.filter(id => !onScreen(id));
   if (available.length === 0) return;
 
-  const id = available[randInt(0, available.length - 1)];
+  const id = pickWeighted(available);
   if (POWERUPS[id].pickup) {
     // Se suelta un ítem; cuenta como "aparecido" aunque no se agarre
     items.push(new PowerUpItem(x, y, id));
@@ -392,7 +412,26 @@ function tryDropPowerUp(x, y) {
   }
 }
 
+// Elige un id al azar según su `weight` (1 por defecto)
+function pickWeighted(ids) {
+  const w = id => POWERUPS[id].weight ?? 1;
+  let r = Math.random() * ids.reduce((sum, id) => sum + w(id), 0);
+  for (const id of ids) if ((r -= w(id)) < 0) return id;
+  return ids[ids.length - 1];
+}
+
+// Bomba: destruye por completo todos los asteroides en pantalla (sin dividirlos)
+function nukeAsteroids() {
+  for (const a of asteroids) {
+    score += POINTS[a.size];
+    explode(a.x, a.y, a.size * 6);
+  }
+  asteroids = [];
+  flashTimer = 0.4;
+}
+
 function updatePowerUps(dt) {
+  if (flashTimer > 0) flashTimer -= dt;
   for (const id in activePowerUps) {
     activePowerUps[id] -= dt;
     if (activePowerUps[id] <= 0) delete activePowerUps[id];
@@ -424,6 +463,7 @@ function initGame() {
   state  = 'playing';
   activePowerUps = {};
   powerUpMsg     = null;
+  flashTimer     = 0;
   startLevelPowerUps(4);
   spawnAsteroids(4);
 }
@@ -607,6 +647,11 @@ function draw() {
   items.forEach(it => it.draw());
   bullets.forEach(b => b.draw());
   ship.draw();
+
+  if (flashTimer > 0) {
+    ctx.fillStyle = `rgba(255,200,150,${(flashTimer / 0.4 * 0.6).toFixed(2)})`;
+    ctx.fillRect(0, 0, W, H);
+  }
 
   drawHUD();
 
